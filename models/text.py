@@ -97,7 +97,12 @@ class P2LTextModel(nn.Module):
 
         u = induct_rnn_dim
         da = induct_att_dim
-        self.rnn = RNN(self.input_dim, u, 1, True, 0.5)
+        rnn_layers = 1
+        # PyTorch-style RNN implementations ignore dropout when a single layer is used.
+        # Explicitly setting 0.0 here avoids confusion if the default changes or the
+        # RNN wrapper begins enforcing validation on the dropout argument.
+        rnn_dropout = 0.0 if rnn_layers == 1 else 0.5
+        self.rnn = RNN(self.input_dim, u, rnn_layers, True, rnn_dropout)
         self.head = nn.Parameter(torch.Tensor(da, 1).uniform_(-0.1, 0.1))
         self.proj = nn.Linear(u * 2, da)
 

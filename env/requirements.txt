@@ -1,0 +1,13 @@
+# Core
+torch>=1.11
+torchvision>=0.12
+torchtext>=0.13
+numpy>=1.21
+scikit-learn>=1.0
+Pillow>=9.0
+
+# Text pipeline (F2L loaders)
+transformers>=4.30
+
+# Optional: tighter DP accounting
+prv-accountant>=0.2.0

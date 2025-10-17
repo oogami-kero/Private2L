@@ -32,4 +32,7 @@ Outputs
 Notes
 - Requires the F2L scripts placed under `Private2L/F2l` (default) or a sibling `F2L` checkout for dataset utilities.
 - For tighter privacy, optionally `pip install prv-accountant` before running; otherwise GDP/RDP fallback is used and logged.
+- Text datasets require the Stanford GloVe 42B 300d vectors. Download `glove.42B.300d.txt` and place it under `Private2L/data/`
+  (or pass a custom path via `--glove_path`). The default setup keeps the embeddings frozen; use `--train_text_embeddings` to
+  fine-tune them during training if desired.
 

@@ -1,3 +1,8 @@
+import logging
+import os
+from typing import Optional, Sequence
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,6 +16,9 @@ except ImportError:
         from F2L.embedding.meta import RNN  # type: ignore[import]
 
 
+logger = logging.getLogger(__name__)
+
+
 class P2LTextModel(nn.Module):
     """Text model with privacy transform on sentence embedding + frozen backbone.
 
@@ -21,7 +29,9 @@ class P2LTextModel(nn.Module):
 
     def __init__(self, dataset: str, n_classes: int, total_classes: int, out_dim: int = 256, finetune_ebd: bool = False,
                  induct_rnn_dim: int = 128, induct_att_dim: int = 64, freeze_backbone: bool = True,
-                 ebd_vocab_size: int = 50000, ebd_dim: int = 300):
+                 ebd_vocab_size: int = 50000, ebd_dim: int = 300,
+                 pretrained_vectors: Optional[torch.Tensor] = None, vocab: Optional[Sequence[str]] = None,
+                 glove_path: Optional[str] = None, require_pretrained: bool = True):
         super().__init__()
 
         # Dataset-specific max lengths from F2L
@@ -34,19 +44,55 @@ class P2LTextModel(nn.Module):
         else:
             self.max_text_len = 256
 
-        # Minimal embedding without torchtext
+        # Minimal embedding without torchtext using pretrained GloVe vectors
         class SimpleEmbed(nn.Module):
-            def __init__(self, vocab_size: int, dim: int, finetune: bool):
+            def __init__(self, vocab_size: int, dim: int, finetune: bool,
+                         pretrained: Optional[torch.Tensor], vocab_list: Optional[Sequence[str]],
+                         glove_file: Optional[str], expect_pretrained: bool):
                 super().__init__()
+                padding_idx = 0 if vocab_size > 0 else None
                 self.embedding_dim = dim
-                self.embedding_layer = nn.Embedding(vocab_size, dim)
+                self.embedding_layer = nn.Embedding(vocab_size, dim, padding_idx=padding_idx)
                 nn.init.normal_(self.embedding_layer.weight, mean=0.0, std=0.02)
+                loaded = False
+
+                if vocab_list is not None and len(vocab_list) != vocab_size:
+                    raise ValueError(
+                        f'Vocabulary length {len(vocab_list)} does not match expected size {vocab_size}.'
+                    )
+
+                if pretrained is not None:
+                    if pretrained.shape != self.embedding_layer.weight.shape:
+                        raise ValueError(
+                            f'Provided pretrained vectors have shape {pretrained.shape}, '
+                            f'expected {self.embedding_layer.weight.shape}.'
+                        )
+                    self.embedding_layer.weight.data.copy_(
+                        pretrained.to(dtype=self.embedding_layer.weight.dtype)
+                    )
+                    loaded = True
+                elif vocab_list is not None and glove_file is not None:
+                    vectors = P2LTextModel.load_glove_vectors(vocab_list, glove_file, dim)
+                    self.embedding_layer.weight.data.copy_(vectors.to(self.embedding_layer.weight.dtype))
+                    loaded = True
+
+                if padding_idx is not None:
+                    self.embedding_layer.weight.data[padding_idx].zero_()
+
                 self.embedding_layer.weight.requires_grad = bool(finetune)
+                self.vectors_loaded = loaded
+
+                if expect_pretrained and not loaded:
+                    raise RuntimeError(
+                        'Failed to load pretrained GloVe vectors for the text embedding layer. '
+                        'Provide `glove_path` or `pretrained_vectors`.'
+                    )
 
             def forward(self, data, weights=None):
                 return self.embedding_layer(data)
 
-        self.ebd = SimpleEmbed(ebd_vocab_size, ebd_dim, finetune_ebd)
+        self.ebd = SimpleEmbed(ebd_vocab_size, ebd_dim, finetune_ebd, pretrained_vectors, vocab, glove_path,
+                               expect_pretrained=require_pretrained)
         self.input_dim = self.ebd.embedding_dim
 
         u = induct_rnn_dim
@@ -72,13 +118,62 @@ class P2LTextModel(nn.Module):
         self.all_classify = nn.Linear(out_dim, total_classes)
 
         if freeze_backbone:
-            for p in self.ebd.parameters():
-                p.requires_grad = False
+            if not finetune_ebd:
+                for p in self.ebd.parameters():
+                    p.requires_grad = False
             for p in self.rnn.parameters():
                 p.requires_grad = False
             self.proj.weight.requires_grad = False
             self.proj.bias.requires_grad = False
             self.head.requires_grad = False
+        self.embeddings_loaded = getattr(self.ebd, 'vectors_loaded', False)
+
+    @staticmethod
+    def load_glove_vectors(vocab: Sequence[str], glove_path: str, embedding_dim: int) -> torch.Tensor:
+        if not vocab:
+            raise ValueError('Vocabulary is required to load GloVe vectors.')
+        if not glove_path:
+            raise ValueError('Path to GloVe embeddings must be provided.')
+        glove_path = os.path.expanduser(glove_path)
+        if not os.path.isfile(glove_path):
+            raise FileNotFoundError(f'GloVe embedding file not found: {glove_path}')
+
+        token_to_idx = {token: idx for idx, token in enumerate(vocab)}
+        weights = torch.empty(len(vocab), embedding_dim, dtype=torch.float32)
+        nn.init.normal_(weights, mean=0.0, std=0.02)
+        found = 0
+
+        with open(glove_path, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, start=1):
+                parts = line.strip().split()
+                if not parts:
+                    continue
+                token = parts[0]
+                idx = token_to_idx.get(token)
+                if idx is None:
+                    continue
+                vector = np.asarray(parts[1:], dtype=np.float32)
+                if vector.shape[0] != embedding_dim:
+                    logger.debug('Skipping token %s on line %d due to mismatched dim %d (expected %d).',
+                                 token, line_num, vector.shape[0], embedding_dim)
+                    continue
+                weights[idx] = torch.from_numpy(vector)
+                found += 1
+
+        if vocab[0] == '<pad>':
+            weights[0].zero_()
+
+        if found == 0:
+            raise RuntimeError(
+                f'No GloVe vectors matched the provided vocabulary when reading {glove_path}.'
+            )
+
+        logger.info('Loaded %d/%d GloVe vectors from %s', found, len(vocab), glove_path)
+        if found < len(vocab):
+            logger.warning('Missing %d tokens from GloVe embeddings at %s',
+                           len(vocab) - found, glove_path)
+
+        return weights
 
     def _attention(self, x, text_len):
         batch_size, max_text_len, _ = x.size()

@@ -507,10 +507,35 @@ def main():
         # Split into train/test using the same class splits as F2L loader
         if args.dataset == '20newsgroup':
             train_classes = [1,5,10,11,13,14,16,18]
+            eval_classes = [c for c in np.unique(y_total) if c not in train_classes]
         elif args.dataset == 'huffpost':
             train_classes = list(range(20))
-        train_idx = np.concatenate([np.where(y_total == c)[0] for c in train_classes])
-        test_idx = np.array([i for i in range(len(y_total)) if i not in set(train_idx.tolist())])
+            val_classes = list(range(20, 25))
+            test_classes = list(range(25, 41))
+            eval_classes = val_classes + test_classes
+
+        def _indices_for_classes(labels: np.ndarray, classes: List[int]) -> np.ndarray:
+            idx_list = [np.where(labels == cls)[0] for cls in classes]
+            idx_list = [idx for idx in idx_list if len(idx) > 0]
+            if not idx_list:
+                return np.array([], dtype=int)
+            return np.concatenate(idx_list)
+
+        train_idx = _indices_for_classes(y_total, train_classes)
+        test_idx = _indices_for_classes(y_total, eval_classes)
+        if len(train_idx) == 0 or len(test_idx) == 0:
+            msg = (
+                f'Detected empty split for dataset {args.dataset}: '
+                f'{len(train_idx)} train / {len(test_idx)} eval samples.'
+            )
+            if logger:
+                logger.error(msg)
+            raise ValueError(msg)
+        if logger:
+            logger.info(
+                'Using %d train samples across %d classes and %d eval samples across %d classes for %s.',
+                len(train_idx), len(train_classes), len(test_idx), len(eval_classes), args.dataset
+            )
         X_train, y_train = X_total[train_idx], y_total[train_idx]
         X_test, y_test = X_total[test_idx], y_total[test_idx]
         # Dirichlet partition

@@ -525,7 +525,7 @@ def train_net_few_shot_new(net_id, net, n_epoch, lr, args_optimizer, args, X_tra
                                              C=1.0,
                                              solver='lbfgs',
                                              max_iter=1000,
-                                             multi_class='multinomial')
+                                             )
                     clf.fit(support_features, support_labels.detach().cpu().numpy())
 
                     query_ys_pred = clf.predict(query_features)

@@ -46,6 +46,8 @@ def get_args():
     p.add_argument('--reg', type=float, default=1e-5)
     default_data_dir = os.path.join(os.path.dirname(__file__), 'data')
     p.add_argument('--datadir', type=str, default=default_data_dir)
+    p.add_argument('--glove_path', type=str, default=None,
+                   help='Path to the GloVe 42B 300d embedding text file. Defaults to <datadir>/glove.42B.300d.txt.')
     p.add_argument('--partition', type=str, default='noniid')
     p.add_argument('--beta', type=float, default=1.0)
     p.add_argument('--device', type=str, default='cuda:0')
@@ -57,6 +59,8 @@ def get_args():
     p.add_argument('--num_test_tasks', type=int, default=10)
     p.add_argument('--num_true_test_ratio', type=int, default=10)
     p.add_argument('--out_dim', type=int, default=256)
+    p.add_argument('--train_text_embeddings', action='store_true',
+                   help='Fine-tune the text embedding layer instead of freezing pretrained GloVe vectors.')
     # Image pipeline backend
     p.add_argument('--image_backend', type=str, default='torchvision', choices=['torchvision', 'native'])
     # Evaluation mode
@@ -478,6 +482,10 @@ def _client_list_rounds(n_parties: int, sample_fraction: float, comm_round: int)
 
 def main():
     args = get_args()
+    if args.glove_path is None:
+        args.glove_path = os.path.join(args.datadir, 'glove.42B.300d.txt')
+    else:
+        args.glove_path = os.path.expanduser(args.glove_path)
     set_seed(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
 
@@ -502,8 +510,9 @@ def main():
     else:
         # Lazy import text loader to avoid torchtext when running images
         from .data.text_loader import load_text_arrays
-        # Text arrays; for FL partition, simple Dirichlet over all labels (returns vocab_size too)
-        X_total, y_total, vocab_size = load_text_arrays(args.datadir, args.dataset)
+        # Text arrays; for FL partition, simple Dirichlet over all labels (also returns vocab)
+        X_total, y_total, vocab = load_text_arrays(args.datadir, args.dataset)
+        vocab_size = len(vocab)
         # Split into train/test using the same class splits as F2L loader
         if args.dataset == '20newsgroup':
             train_classes = [1,5,10,11,13,14,16,18]
@@ -549,14 +558,20 @@ def main():
         n_classes = args.N
         nets = {}
         from .models.text import P2LTextModel
+        glove_path = args.glove_path
+        if logger:
+            logger.info('Loading GloVe embeddings from %s', glove_path)
+        glove_vectors = P2LTextModel.load_glove_vectors(vocab, glove_path, 300)
         for i in range(args.n_parties):
             net = P2LTextModel(dataset=args.dataset, n_classes=n_classes, total_classes=total_classes,
-                               out_dim=args.out_dim, finetune_ebd=False, freeze_backbone=True,
-                               ebd_vocab_size=vocab_size, ebd_dim=300)
+                               out_dim=args.out_dim, finetune_ebd=args.train_text_embeddings, freeze_backbone=True,
+                               ebd_vocab_size=vocab_size, ebd_dim=300, pretrained_vectors=glove_vectors,
+                               vocab=vocab)
             nets[i] = net.cuda() if 'cuda' in args.device else net
         global_model = P2LTextModel(dataset=args.dataset, n_classes=n_classes, total_classes=total_classes,
-                                    out_dim=args.out_dim, finetune_ebd=False, freeze_backbone=True,
-                                    ebd_vocab_size=vocab_size, ebd_dim=300)
+                                    out_dim=args.out_dim, finetune_ebd=args.train_text_embeddings, freeze_backbone=True,
+                                    ebd_vocab_size=vocab_size, ebd_dim=300, pretrained_vectors=glove_vectors,
+                                    vocab=vocab)
         global_model = global_model.cuda() if 'cuda' in args.device else global_model
 
     # Training loop configuration borrowed from F2L

@@ -43,4 +43,8 @@ def load_text_arrays(datadir: str, dataset: str, vocab_max_size: int = 50000, mi
         text[i, :len(toks)] = toks
         text_len[i] = len(toks)
     arr = np.concatenate([text, text_len.reshape(-1, 1)], axis=1)
-    return arr, labels, len(stoi)
+    # Build index->token list for downstream embedding initialization
+    vocab = [''] * len(stoi)
+    for token, idx in stoi.items():
+        vocab[idx] = token
+    return arr, labels, vocab

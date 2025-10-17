@@ -4,7 +4,7 @@ Overview
 - Combines F2L’s efficient few-shot FL with a small, learnable client-side privacy transform layer inspired by PrivateFL.
 - Uses centralized DP at the server via DP-FedAvg: per-client update clipping and Gaussian noise on the aggregated update.
 - Includes a PRV/GDP accountant plugin: tries to use `prv_accountant` if installed; otherwise falls back to an analytic Gaussian DP (GDP) accountant or RDP approximation.
-- Supports 4 few-shot datasets: FC100, miniImageNet (image), 20newsgroup, huffpost (text) by reusing F2L loaders.
+- Supports 4 few-shot datasets: FC100, miniImageNet (image), 20newsgroup, huffpost (text) by reusing the bundled F2L loaders.
 - Logs global@1 and global@5 each round, tracking best-so-far; writes CSV logs and JSON summaries with args and privacy accounting.
 
 Key Design
@@ -30,6 +30,6 @@ Outputs
 - Models: `Private2L/models/<run_id>/global.pth` (optional)
 
 Notes
-- Requires the F2L repo present at `F2L` for dataset utilities.
+- Requires the F2L scripts placed under `Private2L/F2l` (default) or a sibling `F2L` checkout for dataset utilities.
 - For tighter privacy, optionally `pip install prv-accountant` before running; otherwise GDP/RDP fallback is used and logged.
 

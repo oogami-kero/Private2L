@@ -9,10 +9,18 @@ from typing import Dict, List
 import numpy as np
 import torch
 
-_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-_F2L_PATH = os.path.join(_ROOT, 'F2L')
-if _F2L_PATH not in sys.path:
-    sys.path.append(_F2L_PATH)
+_PKG_ROOT = os.path.dirname(os.path.abspath(__file__))
+_F2L_CANDIDATES = [
+    os.path.join(_PKG_ROOT, 'F2l'),
+    os.path.join(_PKG_ROOT, 'F2L'),
+    os.path.join(os.path.abspath(os.path.join(_PKG_ROOT, '..')), 'F2L'),
+]
+
+for _path in _F2L_CANDIDATES:
+    if os.path.isdir(_path):
+        if _path not in sys.path:
+            sys.path.append(_path)
+        break
 
 from .models.image import P2LImageModel
 from .dp.aggregator import clip_and_aggregate
@@ -36,7 +44,8 @@ def get_args():
     p.add_argument('--optimizer', type=str, default='sgd')
     p.add_argument('--lr', type=float, default=1e-3)
     p.add_argument('--reg', type=float, default=1e-5)
-    p.add_argument('--datadir', type=str, default='./F2L/data/')
+    default_data_dir = os.path.join(os.path.dirname(__file__), 'data')
+    p.add_argument('--datadir', type=str, default=default_data_dir)
     p.add_argument('--partition', type=str, default='noniid')
     p.add_argument('--beta', type=float, default=1.0)
     p.add_argument('--device', type=str, default='cuda:0')
@@ -494,7 +503,7 @@ def main():
         # Lazy import text loader to avoid torchtext when running images
         from .data.text_loader import load_text_arrays
         # Text arrays; for FL partition, simple Dirichlet over all labels (returns vocab_size too)
-        X_total, y_total, vocab_size = load_text_arrays('./F2L/data', args.dataset)
+        X_total, y_total, vocab_size = load_text_arrays(args.datadir, args.dataset)
         # Split into train/test using the same class splits as F2L loader
         if args.dataset == '20newsgroup':
             train_classes = [1,5,10,11,13,14,16,18]

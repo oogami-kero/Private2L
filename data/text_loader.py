@@ -15,7 +15,7 @@ def _read_json_lines(path):
 
 
 def load_text_arrays(datadir: str, dataset: str, vocab_max_size: int = 50000, min_freq: int = 1):
-    # datadir should point to F2L/data
+    # datadir should point to the project's data directory
     fname = {'huffpost': 'huffpost.json', '20newsgroup': '20newsgroup.json'}[dataset]
     data = _read_json_lines(os.path.join(datadir, 'text-data', fname))
     labels = np.array([e['label'] for e in data], dtype=np.int64)

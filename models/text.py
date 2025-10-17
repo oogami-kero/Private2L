@@ -2,7 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from F2L.embedding.meta import RNN
+try:
+    from ..F2l.embedding.meta import RNN  # type: ignore[import]
+except ImportError:
+    try:
+        from F2l.embedding.meta import RNN  # type: ignore[import]
+    except ImportError:
+        from F2L.embedding.meta import RNN  # type: ignore[import]
 
 
 class P2LTextModel(nn.Module):

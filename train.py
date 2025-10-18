@@ -591,8 +591,8 @@ def main():
     cfg.log_file_name = ''
 
     # DP settings
-    # DP keys: aggregate both privacy_tl and few_classify (original setting)
-    dp_keys_prefix = ['privacy_tl', 'few_classify']
+    # DP keys: aggregate only the shared few-shot classifier parameters
+    dp_keys_prefix = ['few_classify']
     clip_norm = args.clip_norm
     sigma = args.noise_multiplier
     delta = args.delta
@@ -616,6 +616,9 @@ def main():
             for _, net in nets_this.items():
                 nstate = net.state_dict()
                 for key in nstate:
+                    if key.startswith('privacy_tl'):
+                        # Preserve each client's private transform across rounds
+                        continue
                     nstate[key] = gstate[key].clone().detach()
                 net.load_state_dict(nstate)
 

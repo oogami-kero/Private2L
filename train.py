@@ -72,10 +72,6 @@ def get_args():
     p.add_argument('--noise_multiplier', type=float, default=0.8)
     p.add_argument('--delta', type=float, default=1e-5)
     p.add_argument('--prv_backend', type=str, default='auto', choices=['auto', 'gdp', 'rdp'])
-    p.add_argument('--dp-target-clip-rate', type=float, default=None,
-                   help='Target fraction of clipped client updates; enables adaptive clipping when in (0,1).')
-    p.add_argument('--dp-adapt-rate', type=float, default=0.05,
-                   help='Step size for moving clip norm toward the target percentile when adaptive clipping is enabled.')
     p.add_argument('--log-dp-norms', action='store_true',
                    help='Log per-round DP clipping telemetry (mean norm, percentile, clipping rate).')
     # Misc
@@ -602,23 +598,10 @@ def main():
     # DP settings
     # DP keys: aggregate only the shared few-shot classifier parameters
     dp_keys_prefix = ['few_classify']
-    clip_norm = float(args.clip_norm)
+    clip_norm = args.clip_norm
     sigma = args.noise_multiplier
     delta = args.delta
     prefer_prv = (args.prv_backend == 'auto')
-    target_clip_rate = args.dp_target_clip_rate
-    adapt_rate = float(max(0.0, args.dp_adapt_rate))
-    adaptive_clipping = (
-        target_clip_rate is not None
-        and adapt_rate > 0.0
-    )
-    if adaptive_clipping:
-        target_clip_rate = float(max(0.0, min(1.0, target_clip_rate)))
-        if target_clip_rate in (0.0, 1.0):
-            if logger:
-                logger.warning('Adaptive clipping disabled: target clip rate %.3f collapses percentile.', target_clip_rate)
-            adaptive_clipping = False
-    previous_pre_clip_norms = None
 
     # Rounds sampling
     party_rounds = _client_list_rounds(args.n_parties, args.sample_fraction, args.comm_round)
@@ -680,19 +663,11 @@ def main():
                 # Fallback to few_classify head
                 dp_param_keys = [k for k in gstate.keys() if k.startswith('few_classify')]
             client_states = [nets[i].state_dict() for i in party_list]
-            if adaptive_clipping and previous_pre_clip_norms is not None and previous_pre_clip_norms.size > 0:
-                percentile = 100.0 * (1.0 - target_clip_rate)
-                target_norm = float(np.percentile(previous_pre_clip_norms, percentile))
-                if target_norm <= 0.0:
-                    target_norm = max(target_norm, 1e-6)
-                clip_norm = (1.0 - adapt_rate) * clip_norm + adapt_rate * target_norm
-            round_clip_norm = float(clip_norm)
-
             new_dp_state, dp_telemetry = clip_and_aggregate(
                 client_states=client_states,
                 global_state=gstate,
                 dp_param_keys=dp_param_keys,
-                clip_norm=round_clip_norm,
+                clip_norm=clip_norm,
                 noise_multiplier=sigma,
                 device=device,
             )
@@ -710,39 +685,32 @@ def main():
             eps_so_far = float(acct.eps)
 
             # Log
-            norms = dp_telemetry.get('pre_clip_norms', [])
-            scales = dp_telemetry.get('clip_scales', [])
-            norms_array = np.array(norms, dtype=np.float64) if norms else np.array([], dtype=np.float64)
-            scales_array = np.array(scales, dtype=np.float64) if scales else np.array([], dtype=np.float64)
-            clip_rate = float(np.mean(scales_array < 0.999999)) if scales_array.size > 0 else 0.0
-            dp_stats = {
-                'dp_clip_norm': round_clip_norm,
-                'dp_clip_rate': clip_rate,
-                'dp_clip_frac': clip_rate,
-            }
-            if args.log_dp_norms and norms_array.size > 0:
-                mean_norm = float(norms_array.mean())
-                p95_norm = float(np.percentile(norms_array, 95))
-                dp_stats.update({
-                    'dp_norm_mean': mean_norm,
-                    'dp_norm_p95': p95_norm,
-                })
-            previous_pre_clip_norms = norms_array
+            dp_stats = None
+            if args.log_dp_norms:
+                norms = dp_telemetry.get('pre_clip_norms', [])
+                scales = dp_telemetry.get('clip_scales', [])
+                if norms:
+                    norms_array = np.array(norms, dtype=np.float64)
+                    scales_array = np.array(scales, dtype=np.float64) if scales else np.zeros_like(norms_array)
+                    mean_norm = float(norms_array.mean())
+                    p95_norm = float(np.percentile(norms_array, 95))
+                    clip_frac = float(np.mean(scales_array < 0.999999))
+                    dp_stats = {
+                        'dp_norm_mean': mean_norm,
+                        'dp_norm_p95': p95_norm,
+                        'dp_clip_frac': clip_frac,
+                    }
 
             log_msg = (
                 f"Round {r}: global@1={global1:.4f} best@1={best1:.4f} "
                 f"global@5={global5:.4f} best@5={best5:.4f} eps={eps_so_far:.3f} "
                 f"backend={acct.backend}"
             )
-            log_msg += (
-                f" clip_norm={dp_stats['dp_clip_norm']:.4f}"
-                f" clip_rate={dp_stats['dp_clip_rate']:.3f}"
-                f" dp_clip_frac={dp_stats['dp_clip_frac']:.3f}"
-            )
-            if args.log_dp_norms and norms_array.size > 0:
+            if dp_stats is not None:
                 log_msg += (
                     f" dp_norm_mean={dp_stats['dp_norm_mean']:.4f}"
                     f" dp_norm_p95={dp_stats['dp_norm_p95']:.4f}"
+                    f" dp_clip_frac={dp_stats['dp_clip_frac']:.3f}"
                 )
             logger.info(log_msg)
 

@@ -44,6 +44,8 @@ def get_args():
     p.add_argument('--optimizer', type=str, default='sgd')
     p.add_argument('--lr', type=float, default=0.001)
     p.add_argument('--reg', type=float, default=0.0001)
+    p.add_argument('--privacy_tl_decay', type=float, default=0.0001,
+                   help='Weight decay applied to privacy_tl adapter parameters.')
     default_data_dir = os.path.join(os.path.dirname(__file__), 'data')
     p.add_argument('--datadir', type=str, default=default_data_dir)
     p.add_argument('--glove_path', type=str, default=None,
@@ -382,7 +384,29 @@ def _local_train_image(nets_this: Dict[int, torch.nn.Module], args, net_dataidx_
     train_tf, _ = _image_transforms(args.dataset, backend=args.image_backend, logger=None)
     ce = nn.CrossEntropyLoss()
     for net_id, net in nets_this.items():
-        opt = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=args.lr, momentum=0.9, weight_decay=args.reg)
+        privacy_params = []
+        classifier_params = []
+        for name, param in net.named_parameters():
+            if not param.requires_grad:
+                continue
+            if name.startswith('privacy_tl'):
+                privacy_params.append(param)
+            else:
+                classifier_params.append(param)
+        param_groups = []
+        if classifier_params:
+            param_groups.append({
+                'params': classifier_params,
+                'weight_decay': args.reg,
+            })
+        if privacy_params:
+            param_groups.append({
+                'params': privacy_params,
+                'weight_decay': args.privacy_tl_decay,
+            })
+        if not param_groups:
+            continue
+        opt = optim.SGD(param_groups, lr=args.lr, momentum=0.9)
         idxs = net_dataidx_map[net_id]
         sup_idx, _, chosen = _sample_episode_indices(y_train, idxs, N, K, Q)
         X_sup = torch.stack([train_tf(X_train[i]) for i in sup_idx]).to(device)
@@ -434,7 +458,29 @@ def _local_train_text(nets_this: Dict[int, torch.nn.Module], args, net_dataidx_m
     Q = args.Q if hasattr(args, 'Q') else 10
     ce = nn.CrossEntropyLoss()
     for net_id, net in nets_this.items():
-        opt = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=args.lr, weight_decay=args.reg)
+        privacy_params = []
+        classifier_params = []
+        for name, param in net.named_parameters():
+            if not param.requires_grad:
+                continue
+            if name.startswith('privacy_tl'):
+                privacy_params.append(param)
+            else:
+                classifier_params.append(param)
+        param_groups = []
+        if classifier_params:
+            param_groups.append({
+                'params': classifier_params,
+                'weight_decay': args.reg,
+            })
+        if privacy_params:
+            param_groups.append({
+                'params': privacy_params,
+                'weight_decay': args.privacy_tl_decay,
+            })
+        if not param_groups:
+            continue
+        opt = optim.Adam(param_groups, lr=args.lr)
         idxs = net_dataidx_map[net_id]
         sup_idx, _, chosen = _sample_episode_indices(y_train, idxs, N, K, Q)
         X_sup = torch.tensor(X_train[sup_idx], dtype=torch.long, device=device)
@@ -738,6 +784,8 @@ def main():
                 f" clip_norm={dp_stats['dp_clip_norm']:.4f}"
                 f" clip_rate={dp_stats['dp_clip_rate']:.3f}"
                 f" dp_clip_frac={dp_stats['dp_clip_frac']:.3f}"
+                f" reg_clf={args.reg:.6f}"
+                f" privacy_tl_decay={args.privacy_tl_decay:.6f}"
             )
             if args.log_dp_norms and norms_array.size > 0:
                 log_msg += (
@@ -755,6 +803,8 @@ def main():
                 'epsilon': eps_so_far,
                 'delta': delta,
                 'dp_backend': acct.backend,
+                'reg_classifier': args.reg,
+                'reg_privacy_tl': args.privacy_tl_decay,
             }
             if dp_stats is not None:
                 metrics_row.update(dp_stats)

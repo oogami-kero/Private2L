@@ -37,35 +37,48 @@ def clip_and_aggregate(
     clip_norm: float,
     noise_multiplier: float,
     device: torch.device,
-) -> Dict[str, torch.Tensor]:
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, List[float]]]:
     """Central DP FedAvg: aggregate only dp_param_keys via clipping + Gaussian noise.
 
     - Computes deltas per client: (local - global) for selected keys.
     - Clips each client's update vector to L2 norm <= clip_norm.
     - Sums clipped updates, adds Gaussian noise N(0, (sigma*clip_norm)^2 I), then averages.
-    - Returns new global_state for dp_param_keys; other keys remain as in original global.
+    - Returns the updated global_state for dp_param_keys and telemetry containing
+      each client's pre-clipping norm and the applied scale factor.
     """
     dp_keys = [k for k in dp_param_keys]
     n = len(client_states)
     if n == 0:
-        return copy.deepcopy(global_state)
+        telemetry = {
+            'pre_clip_norms': [],
+            'clip_scales': [],
+            'clip_norm': float(clip_norm),
+        }
+        return copy.deepcopy(global_state), telemetry
 
     # Build flattened deltas and shapes
     named_global = [(k, global_state[k].detach()) for k in dp_keys]
-    _, shapes = _flatten_params(named_global, device)
+    global_vec, shapes = _flatten_params(named_global, device)
     deltas = []
     for cs in client_states:
         named_local = [(k, cs[k].detach()) for k in dp_keys]
         local_vec, _ = _flatten_params(named_local, device)
-        global_vec, _ = _flatten_params(named_global, device)
         deltas.append(local_vec - global_vec)
 
     # Clip per-client updates
     clipped = []
     clip_norm = float(clip_norm)
+    pre_clip_norms: List[float] = []
+    clip_scales: List[float] = []
     for d in deltas:
         norm = torch.norm(d, p=2)
-        scale = min(1.0, clip_norm / (norm + 1e-12))
+        norm_item = float(norm.item())
+        if clip_norm > 0:
+            scale = min(1.0, clip_norm / (norm_item + 1e-12))
+        else:
+            scale = 1.0 if norm_item == 0.0 else 0.0
+        pre_clip_norms.append(norm_item)
+        clip_scales.append(float(scale))
         clipped.append(d * scale)
 
     # Sum, add noise, and average
@@ -77,12 +90,16 @@ def clip_and_aggregate(
     agg = agg / float(n)
 
     # New global = old global + aggregated delta
-    global_vec, _ = _flatten_params(named_global, device)
     new_vec = global_vec + agg
     new_dp_state = _unflatten_to(shapes, new_vec)
 
     new_state = copy.deepcopy(global_state)
     for k, v in new_dp_state.items():
         new_state[k] = v.clone().detach()
-    return new_state
+    telemetry = {
+        'pre_clip_norms': pre_clip_norms,
+        'clip_scales': clip_scales,
+        'clip_norm': clip_norm,
+    }
+    return new_state, telemetry
 

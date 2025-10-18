@@ -4,7 +4,7 @@ import json
 import os
 import random
 import sys
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -72,6 +72,8 @@ def get_args():
     p.add_argument('--noise_multiplier', type=float, default=0.8)
     p.add_argument('--delta', type=float, default=1e-5)
     p.add_argument('--prv_backend', type=str, default='auto', choices=['auto', 'gdp', 'rdp'])
+    p.add_argument('--log-dp-norms', action='store_true',
+                   help='Log per-round DP clipping telemetry (mean norm, percentile, clipping rate).')
     # Misc
     p.add_argument('--save_model', type=int, default=0)
     p.add_argument('--server_momentum', type=float, default=0.0)
@@ -496,7 +498,10 @@ def main():
     args_json = os.path.join(run['log_dir'], 'args.json')
     write_json(args_json, vars(args))
     csv_path = os.path.join(run['log_dir'], 'metrics.csv')
-    write_metrics, metrics_file = metrics_writer(csv_path)
+    extra_metric_headers: Optional[List[str]] = None
+    if args.log_dp_norms:
+        extra_metric_headers = ['dp_norm_mean', 'dp_norm_p95', 'dp_clip_frac']
+    write_metrics, metrics_file = metrics_writer(csv_path, extra_metric_headers)
 
     # Partition data
     # Pre-build image models (text is built after vocab known)
@@ -658,9 +663,14 @@ def main():
                 # Fallback to few_classify head
                 dp_param_keys = [k for k in gstate.keys() if k.startswith('few_classify')]
             client_states = [nets[i].state_dict() for i in party_list]
-            new_dp_state = clip_and_aggregate(client_states=client_states, global_state=gstate,
-                                              dp_param_keys=dp_param_keys, clip_norm=clip_norm,
-                                              noise_multiplier=sigma, device=device)
+            new_dp_state, dp_telemetry = clip_and_aggregate(
+                client_states=client_states,
+                global_state=gstate,
+                dp_param_keys=dp_param_keys,
+                clip_norm=clip_norm,
+                noise_multiplier=sigma,
+                device=device,
+            )
 
             # Apply aggregated update
             for k in dp_param_keys:
@@ -675,10 +685,48 @@ def main():
             eps_so_far = float(acct.eps)
 
             # Log
-            logger.info(f"Round {r}: global@1={global1:.4f} best@1={best1:.4f} global@5={global5:.4f} best@5={best5:.4f} eps={eps_so_far:.3f} backend={acct.backend}")
-            write_metrics({'round': r, 'global1': global1, 'best_global1': best1,
-                           'global5': global5, 'best_global5': best5, 'epsilon': eps_so_far,
-                           'delta': delta, 'dp_backend': acct.backend})
+            dp_stats = None
+            if args.log_dp_norms:
+                norms = dp_telemetry.get('pre_clip_norms', [])
+                scales = dp_telemetry.get('clip_scales', [])
+                if norms:
+                    norms_array = np.array(norms, dtype=np.float64)
+                    scales_array = np.array(scales, dtype=np.float64) if scales else np.zeros_like(norms_array)
+                    mean_norm = float(norms_array.mean())
+                    p95_norm = float(np.percentile(norms_array, 95))
+                    clip_frac = float(np.mean(scales_array < 0.999999))
+                    dp_stats = {
+                        'dp_norm_mean': mean_norm,
+                        'dp_norm_p95': p95_norm,
+                        'dp_clip_frac': clip_frac,
+                    }
+
+            log_msg = (
+                f"Round {r}: global@1={global1:.4f} best@1={best1:.4f} "
+                f"global@5={global5:.4f} best@5={best5:.4f} eps={eps_so_far:.3f} "
+                f"backend={acct.backend}"
+            )
+            if dp_stats is not None:
+                log_msg += (
+                    f" dp_norm_mean={dp_stats['dp_norm_mean']:.4f}"
+                    f" dp_norm_p95={dp_stats['dp_norm_p95']:.4f}"
+                    f" dp_clip_frac={dp_stats['dp_clip_frac']:.3f}"
+                )
+            logger.info(log_msg)
+
+            metrics_row = {
+                'round': r,
+                'global1': global1,
+                'best_global1': best1,
+                'global5': global5,
+                'best_global5': best5,
+                'epsilon': eps_so_far,
+                'delta': delta,
+                'dp_backend': acct.backend,
+            }
+            if dp_stats is not None:
+                metrics_row.update(dp_stats)
+            write_metrics(metrics_row)
 
         # Save final artifacts
         write_json(os.path.join(run['log_dir'], 'privacy.json'), acct.as_dict())

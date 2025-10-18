@@ -20,6 +20,11 @@ Run
   - `python -m Private2L.train --dataset 20newsgroup --mode few-shot --N 5 --K 5 --Q 15`
   - `python -m Private2L.train --dataset huffpost --mode few-shot --N 5 --K 5 --Q 15`
 
+Adapter regularization
+- Use `--privacy_tl_decay` to set the weight decay applied to the client-side `privacy_tl` adapters while keeping
+  the classifier on `--reg`. Both values are reported alongside each communication round in the CSV log to simplify
+  sweep analysis and comparison across runs.
+
 DP Flags (examples)
 - `--dp_mode central --clip_norm 1.0 --noise_multiplier 0.8 --delta 1e-5 --prv_backend auto`
 - Append `--dp-target-clip-rate 0.2 --dp-adapt-rate 0.05` to enable adaptive clipping that steers the norm toward the

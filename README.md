@@ -22,6 +22,8 @@ Run
 
 DP Flags (examples)
 - `--dp_mode central --clip_norm 1.0 --noise_multiplier 0.8 --delta 1e-5 --prv_backend auto`
+- Append `--log-dp-norms` to emit per-round clipping telemetry (mean norm, 95th percentile, clipping rate) in the logs/CSV; 
+  useful for calibrating DP hyperparameters before final runs.
 
 Outputs
 - Logs: `Private2L/logs/<timestamp>/train.log`

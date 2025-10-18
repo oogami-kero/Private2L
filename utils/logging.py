@@ -3,7 +3,7 @@ import os
 import time
 import csv
 import logging
-from typing import Dict
+from typing import Dict, List, Optional
 
 
 def setup_run_dirs(base_dir: str = None) -> Dict[str, str]:
@@ -33,10 +33,12 @@ def write_json(path: str, obj: Dict):
         json.dump(obj, f, indent=2, sort_keys=True)
 
 
-def metrics_writer(csv_path: str):
+def metrics_writer(csv_path: str, extra_headers: Optional[List[str]] = None):
     header = [
         'round', 'global1', 'best_global1', 'global5', 'best_global5', 'epsilon', 'delta', 'dp_backend'
     ]
+    if extra_headers:
+        header.extend(extra_headers)
     exists = os.path.exists(csv_path)
     f = open(csv_path, 'a', newline='')
     w = csv.writer(f)
@@ -44,10 +46,8 @@ def metrics_writer(csv_path: str):
         w.writerow(header)
 
     def write(row: Dict):
-        w.writerow([
-            row.get('round'), row.get('global1'), row.get('best_global1'),
-            row.get('global5'), row.get('best_global5'), row.get('epsilon'), row.get('delta'), row.get('dp_backend'),
-        ])
+        values = [row.get(key) for key in header]
+        w.writerow(values)
         f.flush()
 
     return write, f
